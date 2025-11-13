@@ -5,12 +5,14 @@ import desmoj.core.simulator.ProcessQueue;
 import desmoj.core.simulator.SimProcess;
 import desmoj.core.simulator.TimeSpan;
 
+//Processo que representa um paciente passando pela fila e pelo atendimento
 public class Paciente extends SimProcess {
 
     private final ClinicaModel model;
     private final boolean urgente;
-    private int indiceConsultorio;
+    private int indiceConsultorio = -1; // no pool, atribuído no despacho
     private double tempoChegada;
+    private double chegada;
 
     public Paciente(ClinicaModel owner, String name, boolean showInTrace, boolean urgente) {
         super(owner, name, showInTrace);
@@ -18,52 +20,71 @@ public class Paciente extends SimProcess {
         this.urgente = urgente;
     }
 
+    public boolean isUrgente() { return urgente; }
+    public double getChegada() { return chegada; }
+    public void setIndiceConsultorio(int i) { this.indiceConsultorio = i; }
+
     @Override
     public void lifeCycle() throws SuspendExecution {
         tempoChegada = presentTime().getTimeAsDouble();
+        chegada = tempoChegada;
 
-        // Contagem de chegadas (por tipo)
-        model.incChegada(urgente);
+        if (model.modoFilaUnica) {
+            // entra no pool global
+            if (urgente) model.filaUrgGlobal.insert(this);
+            else model.filaNaoGlobal.insert(this);
+            model.atualizaPicosPool();
 
-        // Escolhe consultório de menor fila
-        indiceConsultorio = model.escolherConsultorio();
-        ProcessQueue<Paciente> fila = model.filasConsultorio[indiceConsultorio];
+            // tenta despachar se houver servidor livre; senão aguarda
+            model.tentarDespacho();
+            passivate(); // será reativado pelo dispatcher quando começar atendimento
 
-        // Entra na fila e atualiza Qmax
-        fila.insert(this);
-        model.atualizaQmax(indiceConsultorio);
+        } else {
+            // filas separadas: escolhe consultório por menor ETA
+            indiceConsultorio = model.escolherConsultorioETA();
+            ProcessQueue<Paciente> qUrg = model.filaUrg[indiceConsultorio];
+            ProcessQueue<Paciente> qNao = model.filaNao[indiceConsultorio];
 
-        // Se não sou o primeiro ou está ocupado, espero
-        if (fila.first() != this || model.consultorioOcupado[indiceConsultorio]) {
-            passivate();
+            if (urgente) qUrg.insert(this);
+            else qNao.insert(this);
+
+            model.atualizaPicosFilasSeparadas();
+
+            if (!model.consultorioOcupado[indiceConsultorio] && model.isMinhaVez(indiceConsultorio, this)) {
+                // segue direto
+            } else {
+                passivate();
+            }
+
+            // retira da fila
+            if (urgente) qUrg.remove(this);
+            else qNao.remove(this);
+            model.consultorioOcupado[indiceConsultorio] = true;
         }
 
-        // Minha vez
-        fila.remove(this);
-        model.consultorioOcupado[indiceConsultorio] = true;
-
-        // Espera efetiva
-        double tInicio = presentTime().getTimeAsDouble();
-        double espera = tInicio - tempoChegada;
+        // registra espera
+        double inicioAtendimento = presentTime().getTimeAsDouble();
+        double espera = inicioAtendimento - tempoChegada;
         model.registraEspera(espera, urgente);
 
-        // Tempo de atendimento (garantidamente > 0)
-        double dur = model.sampleTempoAtendimento(urgente);
+        // atendimento
+        double serv = model.sampleTempoAtendimento(urgente);
+        if (serv <= 0) serv = 0.1;
+        hold(new TimeSpan(serv));
 
-        // Contagem de atendidos e utilização
-        model.incAtendido(urgente);
-        model.adicionaOcupacao(indiceConsultorio, dur);
-
-        // Atendimento
-        hold(new TimeSpan(dur));
-
-        // Libera consultório
+        // libera consultório
         model.consultorioOcupado[indiceConsultorio] = false;
 
-        // Acorda próximo da fila, se existir
-        if (!fila.isEmpty()) {
-            Paciente proximo = fila.first();
-            proximo.activate();
+        if (model.modoFilaUnica) {
+            // após terminar, tenta despachar outro do pool
+            model.tentarDespacho();
+        } else {
+            // ativa próximo da fila do consultório
+            Paciente proximo = model.pickProximo(indiceConsultorio);
+            if (proximo != null) {
+                model.consultorioOcupado[indiceConsultorio] = true;
+                proximo.activate();
+            }
         }
     }
 }

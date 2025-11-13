@@ -6,9 +6,11 @@ import desmoj.core.simulator.TimeSpan;
 import org.example.model.ClinicaModel;
 import org.example.model.Paciente;
 
+
+//Processo que gera pacientes ao longo do dia
 public class GeradorPacientes extends SimProcess {
 
-    public final ClinicaModel model;
+    public ClinicaModel model;
 
     public GeradorPacientes(ClinicaModel owner, String name, boolean showInTrace) {
         super(owner, name, showInTrace);
@@ -17,16 +19,35 @@ public class GeradorPacientes extends SimProcess {
 
     @Override
     public void lifeCycle() throws SuspendExecution {
-        while (true) {
-            boolean urgente = model.sampleUrgente();
 
+        // MESMO horizonte da simulação: 600 min (10h)
+        double fimSim = 600.0;
+
+        while (true) {
+            double agora = presentTime().getTimeAsDouble();
+            if (agora >= fimSim) {
+                // Não gera mais pacientes após o tempo de simulação
+                break;
+            }
+
+            boolean urgente = model.sampleUrgente();
             Paciente p = new Paciente(model, "Paciente", true, urgente);
             p.activate();
 
-            double inter = model.distChegada.sample();
-            if (inter <= 0) inter = 0.1; // robustez
+            double inter = model.sampleInterChegada();
+            if (inter <= 0) inter = 0.1;
 
-            hold(new TimeSpan(inter));
+            // Garante que o gerador não passe muito do fim
+            agora = presentTime().getTimeAsDouble();
+            if (agora + inter > fimSim) {
+                double restante = fimSim - agora;
+                if (restante > 0) {
+                    hold(new TimeSpan(restante));
+                }
+                break;
+            } else {
+                hold(new TimeSpan(inter));
+            }
         }
     }
 }
